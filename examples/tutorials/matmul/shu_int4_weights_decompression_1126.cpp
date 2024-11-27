@@ -85,7 +85,7 @@ int32_t number_of_runs = 1;
 //   weights in an MLP topology.
 // - The weights scaling and zero point values are not known at the primitive creation time.
 matmul::primitive_desc matmul_pd_create(
-        int64_t M, int64_t N, int64_t K, int64_t G, const engine &eng) {
+        int64_t M, int64_t N, int64_t K, int64_t G_SC, int64_t G_ZP, const engine &eng) {
 
     memory::desc a_md({M, K}, memory::data_type::f16, memory::format_tag::ab); // M x K layout
     // oneDNN doesn't have a notion of format for zero-points and it's always considered as tag::ab
@@ -98,11 +98,11 @@ matmul::primitive_desc matmul_pd_create(
     primitive_attr attr;
     // Set scales with multiple scales along K and N dimensions and with groups along K.
     attr.set_scales(DNNL_ARG_WEIGHTS,
-            /* mask */ (1 << 0) + (1 << 1), {G, 1}, memory::data_type::f16);
+            /* mask */ (1 << 0) + (1 << 1), {G_SC, 1}, memory::data_type::f16);
 
     // Set zero points with s4 data type both along K and N dimensions
     attr.set_zero_points(
-            DNNL_ARG_WEIGHTS, (1 << 0) + (1 << 1), {G, 1}, memory::data_type::s4);
+            DNNL_ARG_WEIGHTS, (1 << 0) + (1 << 1), {G_ZP, 1}, memory::data_type::s4);
 
     // Set fpmath mode with `apply_to_int=true` to apply fpmath mode behavior to
     // integral primitives (in this example, matmul).
@@ -116,38 +116,40 @@ void prepare_input(memory &A_f16_mem, memory &sc_B_mem, memory &zp_B_mem) {
     int64_t M = A_f16_mem.get_desc().get_dims()[0];
     int64_t N = sc_B_mem.get_desc().get_dims()[0];
     int64_t K = A_f16_mem.get_desc().get_dims()[1];
-    int64_t NUM_G = sc_B_mem.get_desc().get_dims()[1];
+    int64_t NUM_G_SC = sc_B_mem.get_desc().get_dims()[1];
+    int64_t NUM_G_ZP_s4 = zp_B_mem.get_desc().get_dims()[1];
 
     std::vector<float> A_f32(M * K);
     init_vector(A_f32);
-
-    std::vector<int32_t> zp_transpose_B(NUM_G * 1);
-    init_vector(zp_transpose_B);
-
-    std::vector<float> sc_B(NUM_G * N);
-    init_vector(sc_B);
-
     // Fill A_f16_mem f16 data from A_f32 data filled as f32
     write_to_dnnl_memory(A_f32.data(), A_f16_mem);
 
-    // Transpose the s4 data to match the format tag::ab
-    std::vector<int32_t> zp_B(NUM_G * 1);
-    transpose_s4(zp_transpose_B, zp_B, NUM_G, 1);
-    // Fill zp_B_mem s4 data from zp_B data filled as s32
-    write_to_dnnl_memory(zp_B.data(), zp_B_mem);
-    
+    std::vector<float> sc_B(NUM_G_SC * N);
+    init_vector(sc_B);
     // Fill sc_B_mem f16 data from sc_B data filled as f32
     write_to_dnnl_memory(sc_B.data(), sc_B_mem);
+
+    // 8 INT4 values are packed as INT32
+    int64_t NUM_G_ZP_s32 = NUM_G_ZP_s4 / 8 + 1;
+    std::vector<int32_t> zp_transpose_B(NUM_G_ZP_s32 * 1);
+    init_vector(zp_transpose_B);
+    // Transpose the s4 data to match the format tag::ab
+    std::vector<int32_t> zp_B(NUM_G_ZP_s32 * 1);
+    transpose_s4(zp_transpose_B, zp_B, NUM_G_ZP_s32 , 1);
+    // Fill zp_B_mem s4 data from zp_B data filled as s32
+    write_to_dnnl_memory(zp_B.data(), zp_B_mem);
 }
 
-void infer(const matmul &matmul_p, int64_t M, int64_t N, int64_t K, int64_t G,
-        const memory &B_s4_mem, const engine &eng) {
+void infer(const matmul &matmul_p, int64_t M, int64_t N, int64_t K, int64_t G_SC,
+        int64_t G_ZP, const memory &B_s4_mem, const engine &eng) {
     // input of the current layer / operation
     memory A_f16_mem({{M, K}, memory::data_type::f16, {K, 1}}, eng);
     // De-quantization parameters (eg. Scale and Shift)
-    const int64_t n_groups = K / G;
-    memory sc_B_mem({{n_groups, N}, memory::data_type::f16, {1, n_groups}}, eng);
-    memory zp_B_mem({{n_groups, 1}, memory::data_type::s4, {1, n_groups}}, eng);
+    const int64_t n_sc_groups = K / G_SC;
+    memory sc_B_mem({{N, n_sc_groups}, memory::data_type::f16, {1, N}}, eng);
+    // number of groups for zero points 
+    const int64_t n_zp_groups = K / G_ZP;
+    memory zp_B_mem({{1, n_zp_groups}, memory::data_type::s4, {1, 1}}, eng);
 
     // the function below fills dnnl::memory with some values
     // these memories, typically, come from the previous layers / operations
@@ -174,10 +176,12 @@ void int4_weights_decompression_matmul(engine::kind engine_kind) {
     const int64_t K = 96;
     const int64_t N = 1000;
     const int64_t M = 100;
-    // Quantization Group size for scales and zero points
-    const int64_t G = K / 4;
+    // Quantization Group size for scales
+    const int64_t G_SC = K / 2;
+    // Quantization Group size for zero points
+    const int64_t G_ZP = K / 4;
 
-    auto matmul_pd = matmul_pd_create(M, N, K, G, eng);
+    auto matmul_pd = matmul_pd_create(M, N, K, G_SC, G_ZP, eng);
 
     // Original weights stored by packing 8 INT4 values as INT32 in a format tag::ba.
     // oneDNN doesn't have a notion of format for zero-points and it's always considered as tag::ab.
@@ -203,7 +207,7 @@ void int4_weights_decompression_matmul(engine::kind engine_kind) {
 
     matmul matmul_p(matmul_pd);
 
-    infer(matmul_p, M, N, K, G, B_s4_mem, eng);
+    infer(matmul_p, M, N, K, G_SC, G_ZP, B_s4_mem, eng);
 }
 
 int main(int argc, char **argv) {
