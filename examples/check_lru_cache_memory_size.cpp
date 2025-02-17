@@ -61,59 +61,56 @@
 
 // To ensure correct resolution of symbols, add Psapi.lib to TARGETLIBS
 // and compile with -DPSAPI_VERSION=1
-static size_t GetMemoryInfo(const char* header)
-{
-   PROCESS_MEMORY_COUNTERS_EX2 pmc;
-   size_t private_working_set_size_kb;
-   if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) 
-   {
-       //The following printout corresponds to the value of Resource Memory, respectively
-       printf("%s:\tCommit \t\t\t=  0x%08X- %u (KB)\n", header, pmc.PrivateUsage, pmc.PrivateUsage / 1024);
-       printf("%s:\tWorkingSetSize\t\t\t=  0x%08X- %u (KB)\n", header, pmc.WorkingSetSize, pmc.WorkingSetSize / 1024);
-       printf("%s:\tPrivateWorkingSetSize\t\t\t=  0x%08X- %u (KB)\n", header, pmc.PrivateWorkingSetSize, pmc.PrivateWorkingSetSize / 1024);
-       private_working_set_size_kb = pmc.PrivateWorkingSetSize / 1024;
-   }
- 
-   return private_working_set_size_kb;
+static size_t GetMemoryInfo(const char *header) {
+    PROCESS_MEMORY_COUNTERS_EX2 pmc;
+    size_t private_working_set_size_kb;
+    if (GetProcessMemoryInfo(GetCurrentProcess(),
+                (PROCESS_MEMORY_COUNTERS *)&pmc, sizeof(pmc))) {
+        //The following printout corresponds to the value of Resource Memory, respectively
+        printf("%s:\tCommit \t\t\t=  0x%08X- %u (KB)\n", header,
+                pmc.PrivateUsage, pmc.PrivateUsage / 1024);
+        printf("%s:\tWorkingSetSize\t\t\t=  0x%08X- %u (KB)\n", header,
+                pmc.WorkingSetSize, pmc.WorkingSetSize / 1024);
+        printf("%s:\tPrivateWorkingSetSize\t\t\t=  0x%08X- %u (KB)\n", header,
+                pmc.PrivateWorkingSetSize, pmc.PrivateWorkingSetSize / 1024);
+        private_working_set_size_kb = pmc.PrivateWorkingSetSize / 1024;
+    }
+
+    return private_working_set_size_kb;
 }
 
 #else
 
-#include <iostream>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <unistd.h>
-static size_t GetMemoryInfo(const char* header)
-{
+static size_t GetMemoryInfo(const char *header) {
     std::ifstream status_file("/proc/self/status");
     std::string line;
     size_t vm_size_kb = 0;
     size_t vm_rss_kb = 0;
     size_t vm_data_kb = 0;
 
-    if (status_file.is_open())
-    {
-        while (std::getline(status_file, line))
-        {
-            if (line.find("VmSize:") == 0)
-            {
+    if (status_file.is_open()) {
+        while (std::getline(status_file, line)) {
+            if (line.find("VmSize:") == 0) {
                 sscanf(line.c_str(), "VmSize: %zu kB", &vm_size_kb);
-            }
-            else if (line.find("VmRSS:") == 0)
-            {
+            } else if (line.find("VmRSS:") == 0) {
                 sscanf(line.c_str(), "VmRSS: %zu kB", &vm_rss_kb);
-            }
-            else if (line.find("VmData:") == 0)
-            {
+            } else if (line.find("VmData:") == 0) {
                 sscanf(line.c_str(), "VmData: %zu kB", &vm_data_kb);
             }
         }
         status_file.close();
     }
 
-    std::cout << header << ":\tVmSize\t\t\t= " << vm_size_kb << " (KB)" << std::endl;
-    std::cout << header << ":\tVmRSS\t\t\t= " << vm_rss_kb << " (KB)" << std::endl;
-    std::cout << header << ":\tVmData\t\t\t= " << vm_data_kb << " (KB)" << std::endl;
+    std::cout << header << ":\tVmSize\t\t\t= " << vm_size_kb << " (KB)"
+              << std::endl;
+    std::cout << header << ":\tVmRSS\t\t\t= " << vm_rss_kb << " (KB)"
+              << std::endl;
+    std::cout << header << ":\tVmData\t\t\t= " << vm_data_kb << " (KB)"
+              << std::endl;
 
     return vm_rss_kb;
 }
@@ -121,7 +118,14 @@ static size_t GetMemoryInfo(const char* header)
 
 using namespace dnnl;
 
-void simple_net(engine::kind engine_kind, int times = 100) {
+void simple_net(std::string engine_kind_str, int times = 100) {
+    engine::kind engine_kind;
+    if (engine_kind_str == "cpu") {
+        engine_kind = dnnl::engine::kind::cpu;
+    } else if (engine_kind_str == "gpu") {
+        engine_kind = dnnl::engine::kind::gpu;
+    }
+
     using tag = memory::format_tag;
     using dt = memory::data_type;
 
@@ -837,12 +841,12 @@ void simple_net(engine::kind engine_kind, int times = 100) {
     s.wait();
 }
 
-void cnn_inference_f32(engine::kind engine_kind) {
+void cnn_inference_f32(std::string engine_kind_str) {
     auto begin = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch())
                          .count();
     int times = 100;
-    simple_net(engine_kind, times);
+    simple_net(engine_kind_str, times);
     auto end = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch())
                        .count();
@@ -850,57 +854,64 @@ void cnn_inference_f32(engine::kind engine_kind) {
               << " ms per iteration." << std::endl;
 }
 
-void check_memory_size(engine::kind engine_kind) {
+void check_memory_size(std::string engine_kind_str, int rounds = 10) {
     int capacity = dnnl::get_primitive_cache_capacity();
-    std::cout << "0. No workload: " << std::endl;
+    std::cout << "No workload: " << std::endl;
     std::cout << "Cache capacity: " << capacity << std::endl;
     auto private_working_set_size_kb = GetMemoryInfo("Debug Memory");
-    std::cout << "PrivateWorkingSet Memory size: " << private_working_set_size_kb / 1024.0 << " (MB)\n\n";
+    std::cout << "PrivateWorkingSet Memory size: "
+              << private_working_set_size_kb / 1024.0 << " (MB)\n\n";
 
-    std::cout << "1. Run cnn inference: " << std::endl;
-    cnn_inference_f32(engine_kind);
-    capacity = dnnl::get_primitive_cache_capacity();
-    std::cout << "Cache capacity: " << capacity << std::endl;
-    private_working_set_size_kb = GetMemoryInfo("Debug Memory");
-    std::cout << "PrivateWorkingSet Memory size: " << private_working_set_size_kb / 1024.0 << " (MB)\n\n";
-
-    std::cout << "2. Clear primitive cache: " << std::endl;
-    dnnl::set_primitive_cache_capacity(0);
+	for (int i = 0; i < rounds; i++) {
+		std::cout << "--- Round: " << i << " ---"<< std::endl;
+		std::cout << "Run cnn inference: " << std::endl;
+		cnn_inference_f32(engine_kind_str);
 #ifdef _WIN32
-	Sleep(3);
+		Sleep(10000);
 #else
-    sleep(3);
+		sleep(10);
 #endif
-    capacity = dnnl::get_primitive_cache_capacity();
-    std::cout << "Cache capacity: " << capacity << std::endl;
-    private_working_set_size_kb = GetMemoryInfo("Debug Memory");
-    std::cout << "PrivateWorkingSet Memory size: " << private_working_set_size_kb / 1024.0 << " (MB)\n\n";
-
-    std::cout << "3. Rerun cnn inference: " << std::endl;
-    dnnl::set_primitive_cache_capacity(capacity);
+		capacity = dnnl::get_primitive_cache_capacity();
+		std::cout << "Cache capacity: " << capacity << std::endl;
+		private_working_set_size_kb = GetMemoryInfo("Debug Memory");
+		std::cout << "PrivateWorkingSet Memory size: "
+				<< private_working_set_size_kb / 1024.0 << " (MB)\n\n";
 #ifdef _WIN32
-    Sleep(3);
+		Sleep(10000);
 #else
-    sleep(3);
+		sleep(10);
 #endif
-    cnn_inference_f32(engine_kind);
-    private_working_set_size_kb = GetMemoryInfo("Debug Memory");
-    std::cout << "PrivateWorkingSet Memory size: " << private_working_set_size_kb / 1024.0 << " (MB)\n\n";
 
-    std::cout << "4. Clear primitive cache: " << std::endl;
-    dnnl::set_primitive_cache_capacity(0);
+		std::cout << "Clear primitive cache." << std::endl;
+		dnnl::set_primitive_cache_capacity(0);
 #ifdef _WIN32
-    Sleep(3);
+		Sleep(10000);
 #else
-    sleep(3);
+		sleep(10);
 #endif
-    capacity = dnnl::get_primitive_cache_capacity();
-    std::cout << "Cache capacity: " << capacity << std::endl;
-    private_working_set_size_kb = GetMemoryInfo("Debug Memory");
-    std::cout << "PrivateWorkingSet Memory size: " << private_working_set_size_kb / 1024.0 << " (MB)\n\n";
+		capacity = dnnl::get_primitive_cache_capacity();
+		std::cout << "Cache capacity: " << capacity << std::endl;
+		private_working_set_size_kb = GetMemoryInfo("Debug Memory");
+		std::cout << "PrivateWorkingSet Memory size: "
+				<< private_working_set_size_kb / 1024.0 << " (MB)\n\n";
+
+		std::cout << "Reset cache capacity.\n\n";
+		dnnl::set_primitive_cache_capacity(1024);
+	}
 }
 
 int main(int argc, char **argv) {
-    return handle_example_errors(
-            check_memory_size, parse_engine_kind(argc, argv));
+    std::string engine_kind_str;
+    if (argc == 1) {
+        engine_kind_str = "cpu";
+    } else {
+        engine_kind_str = argv[1];
+    }
+	int rounds = 10;
+	if (argc == 3) {
+		rounds = atoi(argv[2]);
+	}
+    check_memory_size(engine_kind_str, rounds);
+
+    return 0;
 }
